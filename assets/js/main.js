@@ -393,7 +393,6 @@
     var passInput = $("#buildPass");
     var inviterInput = $("#buildInviter");
     var userInput = $("#buildUser");
-    var consent = $("#buildConsent");
     var submitBtn = $("#buildSubmit");
     var steps = $$(".step", modal);
     var dots = $$("[data-step-dot]", modal);
@@ -634,11 +633,6 @@
     if (submitBtn) {
       submitBtn.addEventListener("click", function () {
         if (busy) return;
-        if (!consent || !consent.checked) {
-          setNote("Please tick the notice box to agree before downloading.", "error");
-          if (consent) consent.focus();
-          return;
-        }
         if (/REPLACE-ME/.test(WORKER_URL)) {
           setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
           return;

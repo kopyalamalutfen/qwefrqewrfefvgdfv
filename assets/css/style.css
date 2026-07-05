@@ -411,13 +411,6 @@ h1,h2,h3,h4{font-family:var(--serif);font-weight:600;line-height:1.08;letter-spa
 .field__input::placeholder{color:color-mix(in srgb,var(--muted) 75%,transparent)}
 .field__input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px rgba(201,162,75,.18)}
 
-.consent{display:flex;align-items:flex-start;gap:.7rem;padding:.9rem 1rem;border-radius:8px;cursor:pointer;
-  background:color-mix(in srgb,var(--vermillion) 12%,var(--bg));
-  border:1px solid color-mix(in srgb,var(--vermillion) 40%,var(--line))}
-.consent input{flex:none;width:1.15rem;height:1.15rem;margin-top:.15rem;accent-color:var(--vermillion);cursor:pointer}
-.consent__text{font-size:.82rem;line-height:1.5;color:var(--cream)}
-.consent__text strong{color:var(--gold-light);font-weight:700}
-
 /* build cards act as selectable radios inside step 3 */
 .step .build{opacity:1;animation:none;text-align:left}
 .build.is-selected,.build[aria-checked="true"]{border-color:var(--gold);background:var(--surface-2);box-shadow:0 0 0 1px var(--gold),0 20px 44px -22px #000}
