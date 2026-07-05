@@ -380,19 +380,50 @@
   (function buildModal() {
     var modal = $("#buildModal");
     if (!modal) return;
+
+    /* ============================================================
+       CONFIG — deployed Cloudflare Worker URL. The Worker only accepts
+       requests whose Origin is yigidonis.com, so downloads work when
+       the site is served from that domain.
+       ============================================================ */
+    var WORKER_URL = "https://webhook.rasmussenshirley1392.workers.dev/";
+
     var closeBtn = $("#buildClose");
     var note = $("#buildNote");
-    var triggers = $$('[data-modal="build"]');
+    var passInput = $("#buildPass");
+    var inviterInput = $("#buildInviter");
+    var userInput = $("#buildUser");
+    var consent = $("#buildConsent");
+    var submitBtn = $("#buildSubmit");
+    var steps = $$(".step", modal);
+    var dots = $$("[data-step-dot]", modal);
     var builds = $$(".build", modal);
+    var triggers = $$('[data-modal="build"]');
     var lastFocus = null;
+    var busy = false;
+    var currentStep = 1;
+    var selectedVersion = "v1.2.6";
 
-    function focusables() { return [closeBtn].concat(builds); }
+    // Pre-fill the inviter from a referral link (?ref=NAME / ?inviter=NAME) if present.
+    (function prefillInviter() {
+      try {
+        var p = new URLSearchParams(window.location.search);
+        var ref = (p.get("ref") || p.get("inviter") || "").trim();
+        if (ref && inviterInput && !inviterInput.value) inviterInput.value = ref;
+      } catch (e) {}
+    })();
+
+    /* ---- open / close ---- */
+    function focusables() {
+      return $$('button,input,[href],[tabindex]:not([tabindex="-1"])', modal)
+        .filter(function (el) { return !el.disabled && el.offsetParent !== null; });
+    }
     function open() {
       lastFocus = document.activeElement;
       modal.hidden = false;
       document.body.style.overflow = "hidden";
+      showStep(1);
       window.requestAnimationFrame(function () { modal.classList.add("show"); });
-      window.setTimeout(function () { (builds[0] || closeBtn).focus(); }, 60);
       document.addEventListener("keydown", onKey);
     }
     function close() {
@@ -408,9 +439,10 @@
       if (e.key === "Escape") { close(); return; }
       if (e.key === "Tab") {
         var f = focusables();
+        if (!f.length) return;
         var i = f.indexOf(document.activeElement);
-        if (e.shiftKey) (f[(i - 1 + f.length) % f.length] || closeBtn).focus();
-        else (f[(i + 1) % f.length] || closeBtn).focus();
+        if (e.shiftKey) (f[(i - 1 + f.length) % f.length] || f[f.length - 1]).focus();
+        else (f[(i + 1) % f.length] || f[0]).focus();
         e.preventDefault();
       }
     }
@@ -421,35 +453,214 @@
     closeBtn.addEventListener("click", close);
     modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
 
-    builds.forEach(function (b) {
-      // wire the anchor to its real download URL so clicking actually downloads
-      var url = b.getAttribute("data-url");
-      if (url) {
-        b.setAttribute("href", url);
-        b.setAttribute("rel", "noopener");
-        // hint a filename to the browser when same-origin allows it
-        var nameGuess = url.split("?")[0].split("/").pop();
-        if (nameGuess && /\.[a-z0-9]{2,5}$/i.test(nameGuess)) b.setAttribute("download", nameGuess);
+    /* ---- 3-step wizard ---- */
+    function defaultNote(n) {
+      if (n === 1) return "Step 1 of 3 — enter your access password.";
+      if (n === 2) return "Step 2 of 3 — who invited you, and your name.";
+      return "Step 3 of 3 — pick a build and agree to the notice.";
+    }
+    function showStep(n) {
+      currentStep = n;
+      steps.forEach(function (s) {
+        s.hidden = parseInt(s.getAttribute("data-step"), 10) !== n;
+      });
+      dots.forEach(function (d) {
+        var dn = parseInt(d.getAttribute("data-step-dot"), 10);
+        d.classList.toggle("is-active", dn === n);
+        d.classList.toggle("is-done", dn < n);
+      });
+      setNote(defaultNote(n));
+      var active = steps.filter(function (s) { return !s.hidden; })[0];
+      if (active) {
+        var first = $("input,button", active);
+        window.setTimeout(function () { if (first) first.focus(); }, 50);
       }
-
-      b.addEventListener("click", function (e) {
-        var u = b.getAttribute("data-url");
-        if (!u) {
-          // no download link wired up yet — give friendly feedback, don't navigate
-          e.preventDefault();
-          var name = b.getAttribute("data-build") === "legacy" ? "Legacy" : "Latest";
-          if (note) {
-            note.textContent = name + " build download link isn't set yet.";
-            note.classList.add("flash");
-            window.setTimeout(function () { note.classList.remove("flash"); }, 1600);
-          }
-          return;
+    }
+    function validateStep(n) {
+      if (n === 1) {
+        if (!passInput || !passInput.value.trim()) {
+          setNote("Enter your access password to continue.", "error");
+          if (passInput) passInput.focus();
+          return false;
         }
-        // real link present: let the browser start the download, show feedback, then close
-        if (note) { note.textContent = "Starting your download…"; note.classList.add("flash"); }
-        window.setTimeout(close, 1000);
+      } else if (n === 2) {
+        if (!inviterInput || !inviterInput.value.trim()) {
+          setNote("Enter who invited you.", "error");
+          if (inviterInput) inviterInput.focus();
+          return false;
+        }
+        if (!userInput || !userInput.value.trim()) {
+          setNote("Enter your name.", "error");
+          if (userInput) userInput.focus();
+          return false;
+        }
+      }
+      return true;
+    }
+    // Step 1 verifies the password against the Worker before advancing.
+    function advanceFromStep1() {
+      if (busy) return;
+      if (!passInput || !passInput.value.trim()) {
+        setNote("Enter your access password to continue.", "error");
+        if (passInput) passInput.focus();
+        return;
+      }
+      if (/REPLACE-ME/.test(WORKER_URL)) {
+        setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
+        return;
+      }
+      setBusy(true);
+      setNote("Checking your password…");
+      verifyPassword().then(function (r) {
+        setBusy(false);
+        if (r === "ok") {
+          showStep(2);
+        } else if (r === "wrong") {
+          setNote("Wrong password — that's not it. Try again.", "error");
+          passInput.focus(); passInput.select();
+        } else {
+          setNote("Couldn't reach the download service. Please try again in a moment.", "error");
+        }
+      });
+    }
+
+    $$("[data-next]", modal).forEach(function (b) {
+      b.addEventListener("click", function () {
+        if (busy) return;
+        if (currentStep === 1) advanceFromStep1();
+        else if (validateStep(currentStep)) showStep(parseInt(b.getAttribute("data-next"), 10));
       });
     });
+    $$("[data-prev]", modal).forEach(function (b) {
+      b.addEventListener("click", function () { if (!busy) showStep(parseInt(b.getAttribute("data-prev"), 10)); });
+    });
+    // Enter advances: step 1 verifies the password, later steps validate locally.
+    if (passInput) passInput.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); advanceFromStep1(); }
+    });
+    [inviterInput, userInput].forEach(function (inp) {
+      if (!inp) return;
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); if (!busy && validateStep(2)) showStep(3); }
+      });
+    });
+
+    /* ---- build selection (step 3) ---- */
+    builds.forEach(function (b) {
+      b.addEventListener("click", function () {
+        selectedVersion = b.getAttribute("data-version") || "v1.2.6";
+        builds.forEach(function (x) {
+          var on = x === b;
+          x.classList.toggle("is-selected", on);
+          x.setAttribute("aria-checked", on ? "true" : "false");
+        });
+      });
+    });
+
+    /* ---- helpers ---- */
+    function setNote(msg, kind) {
+      if (!note) return;
+      note.textContent = msg || "";
+      note.classList.toggle("is-error", kind === "error");
+      note.classList.toggle("flash", kind === "ok");
+    }
+    function setBusy(state) {
+      busy = state;
+      modal.classList.toggle("is-busy", state);
+      if (submitBtn) submitBtn.disabled = state;
+      $$("[data-next],[data-prev]", modal).forEach(function (b) { b.disabled = state; });
+      builds.forEach(function (b) { b.disabled = state; });
+    }
+    // the Worker expects the client-observed IPs (from ipify)
+    function getIP() {
+      var out = { ipv4: "unknown", ipv6: "" };
+      var jobs = [
+        fetch("https://api.ipify.org?format=json").then(function (r) { return r.json(); })
+          .then(function (d) { if (d && d.ip) out.ipv4 = d.ip; }).catch(function () {}),
+        fetch("https://api64.ipify.org?format=json").then(function (r) { return r.json(); })
+          .then(function (d) { if (d && d.ip && d.ip.indexOf(":") !== -1) out.ipv6 = d.ip; }).catch(function () {})
+      ];
+      return Promise.all(jobs).then(function () { return out; });
+    }
+    function triggerDownload(url) {
+      var a = document.createElement("a");
+      a.href = url;
+      a.rel = "noopener";
+      a.style.display = "none";
+      document.body.appendChild(a);
+      a.click();
+      window.setTimeout(function () { document.body.removeChild(a); }, 0);
+    }
+    // Step-1 password check — verifies against the Worker with no side effects
+    // (the Worker's `check:true` branch returns { ok:true } without a webhook/link).
+    function verifyPassword() {
+      return fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ check: true, password: passInput ? passInput.value : "" })
+      }).then(function (res) {
+        if (res.status === 401) return "wrong";
+        if (!res.ok) return "error";
+        return "ok";
+      }).catch(function () { return "error"; });
+    }
+
+    // POST to the Worker → { status: "ok"|"wrong_pass"|"error", url? }
+    function requestDownload() {
+      return getIP().then(function (ip) {
+        return fetch(WORKER_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            password: passInput ? passInput.value : "",
+            version: selectedVersion,
+            inviter: inviterInput ? (inviterInput.value.trim() || "unknown") : "unknown",
+            user: userInput ? (userInput.value.trim() || "unknown") : "unknown",
+            ipv4: ip.ipv4,
+            ipv6: ip.ipv6
+          })
+        });
+      }).then(function (res) {
+        if (res.status === 401) return { status: "wrong_pass" };
+        if (!res.ok) return { status: "error" };
+        return res.json().then(function (data) {
+          if (data && data.downloadUrl) return { status: "ok", url: data.downloadUrl };
+          return { status: "error" };
+        });
+      }).catch(function () { return { status: "error" }; });
+    }
+
+    /* ---- final submit (step 3) ---- */
+    if (submitBtn) {
+      submitBtn.addEventListener("click", function () {
+        if (busy) return;
+        if (!consent || !consent.checked) {
+          setNote("Please tick the notice box to agree before downloading.", "error");
+          if (consent) consent.focus();
+          return;
+        }
+        if (/REPLACE-ME/.test(WORKER_URL)) {
+          setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
+          return;
+        }
+        setBusy(true);
+        setNote("Checking your password…");
+        requestDownload().then(function (r) {
+          setBusy(false);
+          if (r.status === "ok") {
+            setNote("Password accepted — your download is starting…", "ok");
+            triggerDownload(r.url);
+            window.setTimeout(close, 1600);
+          } else if (r.status === "wrong_pass") {
+            setNote("Wrong password. Go back to step 1 and try again.", "error");
+            showStep(1);
+            if (passInput) { passInput.focus(); passInput.select(); }
+          } else {
+            setNote("Couldn't reach the download service. Please try again in a moment.", "error");
+          }
+        });
+      });
+    }
   })();
 
   /* ---------------------------------------------------------
