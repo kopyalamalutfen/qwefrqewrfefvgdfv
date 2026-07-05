@@ -463,3 +463,9 @@ h1,h2,h3,h4{font-family:var(--serif);font-weight:600;line-height:1.08;letter-spa
   .hero__bg{inset:0}
   .ambient{display:none}
 }
+
+/* ============================================================
+   TURNSTILE (download modal bot check)
+   ============================================================ */
+.build-turnstile{margin:.9rem 0 .2rem;display:flex;justify-content:center}
+.build-turnstile:empty{display:none;margin:0}

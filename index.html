@@ -448,6 +448,8 @@
                autocomplete="off" autocapitalize="off" spellcheck="false"
                placeholder="Enter the password we gave you" />
       </div>
+      <!-- Cloudflare Turnstile bot check (renders only when a site key is configured) -->
+      <div id="buildTurnstile" class="build-turnstile"></div>
       <div class="step__nav step__nav--end">
         <button class="btn btn--primary" type="button" data-next="2">Next</button>
       </div>
@@ -511,6 +513,8 @@
   <button class="lightbox__nav lightbox__next" id="lbNext" aria-label="Next">&#10095;</button>
 </div>
 
-<script src="assets/js/main.js?v=2" defer></script>
+<script src="assets/js/main.js?v=3" defer></script>
+<!-- Cloudflare Turnstile — loaded lazily; main.js renders the widget explicitly -->
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </body>
 </html>

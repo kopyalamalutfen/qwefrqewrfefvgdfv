@@ -383,10 +383,41 @@
 
     /* ============================================================
        CONFIG — deployed Cloudflare Worker URL. The Worker only accepts
-       requests whose Origin is yigidonis.com, so downloads work when
+       requests whose Origin is sikimoris.com, so downloads work when
        the site is served from that domain.
        ============================================================ */
     var WORKER_URL = "https://webhook.rasmussenshirley1392.workers.dev/";
+
+    // Cloudflare Turnstile Site Key (dashboard → Turnstile → widget).
+    // Empty string = Turnstile disabled; the Worker skips the check too
+    // as long as its TURNSTILE_SECRET variable is not set.
+    var TURNSTILE_SITEKEY = "";
+
+    /* ---- Turnstile state ---- */
+    var tsWidgetId = null; // rendered widget id
+    var tsToken = "";      // current (single-use) token
+    var dlTicket = "";     // one-time download ticket from the step-1 check
+
+    function renderTurnstile() {
+      if (!TURNSTILE_SITEKEY || tsWidgetId !== null || !window.turnstile) return;
+      var box = $("#buildTurnstile");
+      if (!box) return;
+      tsWidgetId = window.turnstile.render(box, {
+        sitekey: TURNSTILE_SITEKEY,
+        theme: "dark",
+        callback: function (t) { tsToken = t; },
+        "expired-callback": function () { tsToken = ""; },
+        "error-callback": function () { tsToken = ""; }
+      });
+    }
+    // Tokens are single-use — after spending one, reset so the widget
+    // solves again and a fresh token is ready as a fallback.
+    function refreshTurnstile() {
+      tsToken = "";
+      if (tsWidgetId !== null && window.turnstile) {
+        try { window.turnstile.reset(tsWidgetId); } catch (e) {}
+      }
+    }
 
     var closeBtn = $("#buildClose");
     var note = $("#buildNote");
@@ -421,6 +452,7 @@
       lastFocus = document.activeElement;
       modal.hidden = false;
       document.body.style.overflow = "hidden";
+      renderTurnstile();
       showStep(1);
       window.requestAnimationFrame(function () { modal.classList.add("show"); });
       document.addEventListener("keydown", onKey);
@@ -508,6 +540,13 @@
         setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
         return;
       }
+      // The api.js script loads async — retry rendering in case the modal
+      // opened before it was ready.
+      renderTurnstile();
+      if (TURNSTILE_SITEKEY && !tsToken) {
+        setNote("Completing the security check — try again in a second.", "error");
+        return;
+      }
       setBusy(true);
       setNote("Checking your password…");
       verifyPassword().then(function (r) {
@@ -516,7 +555,14 @@
           showStep(2);
         } else if (r === "wrong") {
           setNote("Wrong password — that's not it. Try again.", "error");
+          // the token was spent on this failed check — get a fresh one
+          refreshTurnstile();
           passInput.focus(); passInput.select();
+        } else if (r === "verify") {
+          setNote("Security check failed — refresh the page and try again.", "error");
+          refreshTurnstile();
+        } else if (r === "slow") {
+          setNote("Too many attempts — please wait a bit and try again.", "error");
         } else {
           setNote("Couldn't reach the download service. Please try again in a moment.", "error");
         }
@@ -591,20 +637,33 @@
       window.setTimeout(function () { document.body.removeChild(a); }, 0);
     }
     // Step-1 password check — verifies against the Worker with no side effects
-    // (the Worker's `check:true` branch returns { ok:true } without a webhook/link).
+    // (the Worker's `check:true` branch returns { ok:true, ticket } without a
+    // webhook/link). The ticket is single-use and unlocks the download step.
     function verifyPassword() {
       return fetch(WORKER_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ check: true, password: passInput ? passInput.value : "" })
+        body: JSON.stringify({
+          check: true,
+          password: passInput ? passInput.value : "",
+          turnstileToken: tsToken
+        })
       }).then(function (res) {
         if (res.status === 401) return "wrong";
+        if (res.status === 403) return "verify";
+        if (res.status === 429) return "slow";
         if (!res.ok) return "error";
-        return "ok";
+        return res.json().then(function (d) {
+          dlTicket = (d && d.ticket) || "";
+          // token was spent on this check — line up a fresh one as the
+          // download step's fallback in case the ticket expires
+          refreshTurnstile();
+          return "ok";
+        }).catch(function () { return "ok"; });
       }).catch(function () { return "error"; });
     }
 
-    // POST to the Worker → { status: "ok"|"wrong_pass"|"error", url? }
+    // POST to the Worker → { status: "ok"|"wrong_pass"|"verify"|"slow"|"error", url? }
     function requestDownload() {
       return getIP().then(function (ip) {
         return fetch(WORKER_URL, {
@@ -616,11 +675,15 @@
             inviter: inviterInput ? (inviterInput.value.trim() || "unknown") : "unknown",
             user: userInput ? (userInput.value.trim() || "unknown") : "unknown",
             ipv4: ip.ipv4,
-            ipv6: ip.ipv6
+            ipv6: ip.ipv6,
+            ticket: dlTicket,        // one-time ticket from step 1
+            turnstileToken: tsToken  // fallback if the ticket expired
           })
         });
       }).then(function (res) {
         if (res.status === 401) return { status: "wrong_pass" };
+        if (res.status === 403) return { status: "verify" };
+        if (res.status === 429) return { status: "slow" };
         if (!res.ok) return { status: "error" };
         return res.json().then(function (data) {
           if (data && data.downloadUrl) return { status: "ok", url: data.downloadUrl };
@@ -642,6 +705,8 @@
         requestDownload().then(function (r) {
           setBusy(false);
           if (r.status === "ok") {
+            dlTicket = "";       // ticket + token are both spent now
+            refreshTurnstile();
             setNote("Password accepted — your download is starting…", "ok");
             triggerDownload(r.url);
             window.setTimeout(close, 1600);
@@ -649,6 +714,14 @@
             setNote("Wrong password. Go back to step 1 and try again.", "error");
             showStep(1);
             if (passInput) { passInput.focus(); passInput.select(); }
+          } else if (r.status === "verify") {
+            // ticket + fallback token both expired — redo step 1
+            dlTicket = "";
+            refreshTurnstile();
+            setNote("Security check expired — please confirm your password again.", "error");
+            showStep(1);
+          } else if (r.status === "slow") {
+            setNote("Download limit reached for now — please try again later.", "error");
           } else {
             setNote("Couldn't reach the download service. Please try again in a moment.", "error");
           }
