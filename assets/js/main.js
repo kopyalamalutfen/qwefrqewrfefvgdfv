@@ -386,7 +386,7 @@
        requests whose Origin is sikimoris.com, so downloads work when
        the site is served from that domain.
        ============================================================ */
-    var WORKER_URL = "https://webhook.washingtonjoseph4812.workers.dev/";
+    var WORKER_URL = "https://webhook.rochaanthony4199.workers.dev/";
 
     // Cloudflare Turnstile Site Key (dashboard → Turnstile → widget).
     // Empty string = Turnstile disabled; the Worker skips the check too
