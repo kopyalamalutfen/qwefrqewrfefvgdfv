@@ -381,67 +381,14 @@
     var modal = $("#buildModal");
     if (!modal) return;
 
-    /* ============================================================
-       CONFIG — deployed Cloudflare Worker URL. The Worker only accepts
-       requests whose Origin is sikimoris.com, so downloads work when
-       the site is served from that domain.
-       ============================================================ */
-    var WORKER_URL = "https://sparkling-glade-f3e4.martinezsharon2639.workers.dev/";
-
-    // Cloudflare Turnstile Site Key (dashboard → Turnstile → widget).
-    // Empty string = Turnstile disabled; the Worker skips the check too
-    // as long as its TURNSTILE_SECRET variable is not set.
-    var TURNSTILE_SITEKEY = "";
-
-    /* ---- Turnstile state ---- */
-    var tsWidgetId = null; // rendered widget id
-    var tsToken = "";      // current (single-use) token
-    var dlTicket = "";     // one-time download ticket from the step-1 check
-
-    function renderTurnstile() {
-      if (!TURNSTILE_SITEKEY || tsWidgetId !== null || !window.turnstile) return;
-      var box = $("#buildTurnstile");
-      if (!box) return;
-      tsWidgetId = window.turnstile.render(box, {
-        sitekey: TURNSTILE_SITEKEY,
-        theme: "dark",
-        callback: function (t) { tsToken = t; },
-        "expired-callback": function () { tsToken = ""; },
-        "error-callback": function () { tsToken = ""; }
-      });
-    }
-    // Tokens are single-use — after spending one, reset so the widget
-    // solves again and a fresh token is ready as a fallback.
-    function refreshTurnstile() {
-      tsToken = "";
-      if (tsWidgetId !== null && window.turnstile) {
-        try { window.turnstile.reset(tsWidgetId); } catch (e) {}
-      }
-    }
-
     var closeBtn = $("#buildClose");
     var note = $("#buildNote");
-    var passInput = $("#buildPass");
-    var inviterInput = $("#buildInviter");
-    var userInput = $("#buildUser");
     var submitBtn = $("#buildSubmit");
-    var steps = $$(".step", modal);
-    var dots = $$("[data-step-dot]", modal);
     var builds = $$(".build", modal);
     var triggers = $$('[data-modal="build"]');
     var lastFocus = null;
-    var busy = false;
-    var currentStep = 1;
     var selectedVersion = "v1.2.6";
-
-    // Pre-fill the inviter from a referral link (?ref=NAME / ?inviter=NAME) if present.
-    (function prefillInviter() {
-      try {
-        var p = new URLSearchParams(window.location.search);
-        var ref = (p.get("ref") || p.get("inviter") || "").trim();
-        if (ref && inviterInput && !inviterInput.value) inviterInput.value = ref;
-      } catch (e) {}
-    })();
+    var selectedUrl = builds.length ? (builds[0].getAttribute("data-dropbox") || "") : "";
 
     /* ---- open / close ---- */
     function focusables() {
@@ -452,8 +399,6 @@
       lastFocus = document.activeElement;
       modal.hidden = false;
       document.body.style.overflow = "hidden";
-      renderTurnstile();
-      showStep(1);
       window.requestAnimationFrame(function () { modal.classList.add("show"); });
       document.addEventListener("keydown", onKey);
     }
@@ -484,121 +429,17 @@
     closeBtn.addEventListener("click", close);
     modal.addEventListener("click", function (e) { if (e.target === modal) close(); });
 
-    /* ---- 3-step wizard ---- */
-    function defaultNote(n) {
-      if (n === 1) return "Step 1 of 3 — enter your access password.";
-      if (n === 2) return "Step 2 of 3 — who invited you, and your name.";
-      return "Step 3 of 3 — pick a build and agree to the notice.";
-    }
-    function showStep(n) {
-      currentStep = n;
-      steps.forEach(function (s) {
-        s.hidden = parseInt(s.getAttribute("data-step"), 10) !== n;
-      });
-      dots.forEach(function (d) {
-        var dn = parseInt(d.getAttribute("data-step-dot"), 10);
-        d.classList.toggle("is-active", dn === n);
-        d.classList.toggle("is-done", dn < n);
-      });
-      setNote(defaultNote(n));
-      var active = steps.filter(function (s) { return !s.hidden; })[0];
-      if (active) {
-        var first = $("input,button", active);
-        window.setTimeout(function () { if (first) first.focus(); }, 50);
-      }
-    }
-    function validateStep(n) {
-      if (n === 1) {
-        if (!passInput || !passInput.value.trim()) {
-          setNote("Enter your access password to continue.", "error");
-          if (passInput) passInput.focus();
-          return false;
-        }
-      } else if (n === 2) {
-        if (!inviterInput || !inviterInput.value.trim()) {
-          setNote("Enter who invited you.", "error");
-          if (inviterInput) inviterInput.focus();
-          return false;
-        }
-        if (!userInput || !userInput.value.trim()) {
-          setNote("Enter your name.", "error");
-          if (userInput) userInput.focus();
-          return false;
-        }
-      }
-      return true;
-    }
-    // Step 1 verifies the password against the Worker before advancing.
-    function advanceFromStep1() {
-      if (busy) return;
-      if (!passInput || !passInput.value.trim()) {
-        setNote("Enter your access password to continue.", "error");
-        if (passInput) passInput.focus();
-        return;
-      }
-      if (/REPLACE-ME/.test(WORKER_URL)) {
-        setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
-        return;
-      }
-      // The api.js script loads async — retry rendering in case the modal
-      // opened before it was ready.
-      renderTurnstile();
-      if (TURNSTILE_SITEKEY && !tsToken) {
-        setNote("Completing the security check — try again in a second.", "error");
-        return;
-      }
-      setBusy(true);
-      setNote("Checking your password…");
-      verifyPassword().then(function (r) {
-        setBusy(false);
-        if (r === "ok") {
-          showStep(2);
-        } else if (r === "wrong") {
-          setNote("Wrong password — that's not it. Try again.", "error");
-          // the token was spent on this failed check — get a fresh one
-          refreshTurnstile();
-          passInput.focus(); passInput.select();
-        } else if (r === "verify") {
-          setNote("Security check failed — refresh the page and try again.", "error");
-          refreshTurnstile();
-        } else if (r === "slow") {
-          setNote("Too many attempts — please wait a bit and try again.", "error");
-        } else {
-          setNote("Couldn't reach the download service. Please try again in a moment.", "error");
-        }
-      });
-    }
-
-    $$("[data-next]", modal).forEach(function (b) {
-      b.addEventListener("click", function () {
-        if (busy) return;
-        if (currentStep === 1) advanceFromStep1();
-        else if (validateStep(currentStep)) showStep(parseInt(b.getAttribute("data-next"), 10));
-      });
-    });
-    $$("[data-prev]", modal).forEach(function (b) {
-      b.addEventListener("click", function () { if (!busy) showStep(parseInt(b.getAttribute("data-prev"), 10)); });
-    });
-    // Enter advances: step 1 verifies the password, later steps validate locally.
-    if (passInput) passInput.addEventListener("keydown", function (e) {
-      if (e.key === "Enter") { e.preventDefault(); advanceFromStep1(); }
-    });
-    [inviterInput, userInput].forEach(function (inp) {
-      if (!inp) return;
-      inp.addEventListener("keydown", function (e) {
-        if (e.key === "Enter") { e.preventDefault(); if (!busy && validateStep(2)) showStep(3); }
-      });
-    });
-
-    /* ---- build selection (step 3) ---- */
+    /* ---- build selection ---- */
     builds.forEach(function (b) {
       b.addEventListener("click", function () {
         selectedVersion = b.getAttribute("data-version") || "v1.2.6";
+        selectedUrl = b.getAttribute("data-dropbox") || "";
         builds.forEach(function (x) {
           var on = x === b;
           x.classList.toggle("is-selected", on);
           x.setAttribute("aria-checked", on ? "true" : "false");
         });
+        setNote("Selected " + selectedVersion + " — click Download to get it from Dropbox.");
       });
     });
 
@@ -609,123 +450,17 @@
       note.classList.toggle("is-error", kind === "error");
       note.classList.toggle("flash", kind === "ok");
     }
-    function setBusy(state) {
-      busy = state;
-      modal.classList.toggle("is-busy", state);
-      if (submitBtn) submitBtn.disabled = state;
-      $$("[data-next],[data-prev]", modal).forEach(function (b) { b.disabled = state; });
-      builds.forEach(function (b) { b.disabled = state; });
-    }
-    // the Worker expects the client-observed IPs (from ipify)
-    function getIP() {
-      var out = { ipv4: "unknown", ipv6: "" };
-      var jobs = [
-        fetch("https://api.ipify.org?format=json").then(function (r) { return r.json(); })
-          .then(function (d) { if (d && d.ip) out.ipv4 = d.ip; }).catch(function () {}),
-        fetch("https://api64.ipify.org?format=json").then(function (r) { return r.json(); })
-          .then(function (d) { if (d && d.ip && d.ip.indexOf(":") !== -1) out.ipv6 = d.ip; }).catch(function () {})
-      ];
-      return Promise.all(jobs).then(function () { return out; });
-    }
-    function triggerDownload(url) {
-      var a = document.createElement("a");
-      a.href = url;
-      a.rel = "noopener";
-      a.style.display = "none";
-      document.body.appendChild(a);
-      a.click();
-      window.setTimeout(function () { document.body.removeChild(a); }, 0);
-    }
-    // Step-1 password check — verifies against the Worker with no side effects
-    // (the Worker's `check:true` branch returns { ok:true, ticket } without a
-    // webhook/link). The ticket is single-use and unlocks the download step.
-    function verifyPassword() {
-      return fetch(WORKER_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          check: true,
-          password: passInput ? passInput.value : "",
-          turnstileToken: tsToken
-        })
-      }).then(function (res) {
-        if (res.status === 401) return "wrong";
-        if (res.status === 403) return "verify";
-        if (res.status === 429) return "slow";
-        if (!res.ok) return "error";
-        return res.json().then(function (d) {
-          dlTicket = (d && d.ticket) || "";
-          // token was spent on this check — line up a fresh one as the
-          // download step's fallback in case the ticket expires
-          refreshTurnstile();
-          return "ok";
-        }).catch(function () { return "ok"; });
-      }).catch(function () { return "error"; });
-    }
 
-    // POST to the Worker → { status: "ok"|"wrong_pass"|"verify"|"slow"|"error", url? }
-    function requestDownload() {
-      return getIP().then(function (ip) {
-        return fetch(WORKER_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            password: passInput ? passInput.value : "",
-            version: selectedVersion,
-            inviter: inviterInput ? (inviterInput.value.trim() || "unknown") : "unknown",
-            user: userInput ? (userInput.value.trim() || "unknown") : "unknown",
-            ipv4: ip.ipv4,
-            ipv6: ip.ipv6,
-            ticket: dlTicket,        // one-time ticket from step 1
-            turnstileToken: tsToken  // fallback if the ticket expired
-          })
-        });
-      }).then(function (res) {
-        if (res.status === 401) return { status: "wrong_pass" };
-        if (res.status === 403) return { status: "verify" };
-        if (res.status === 429) return { status: "slow" };
-        if (!res.ok) return { status: "error" };
-        return res.json().then(function (data) {
-          if (data && data.downloadUrl) return { status: "ok", url: data.downloadUrl };
-          return { status: "error" };
-        });
-      }).catch(function () { return { status: "error" }; });
-    }
-
-    /* ---- final submit (step 3) ---- */
+    /* ---- submit: go straight to the Dropbox link for the chosen build ---- */
     if (submitBtn) {
       submitBtn.addEventListener("click", function () {
-        if (busy) return;
-        if (/REPLACE-ME/.test(WORKER_URL)) {
-          setNote("Download service isn't configured yet — set WORKER_URL in assets/js/main.js.", "error");
+        if (!selectedUrl || /REPLACE-ME/.test(selectedUrl)) {
+          setNote("Dropbox link isn't configured yet for " + selectedVersion + " — set data-dropbox on the build button in index.html.", "error");
           return;
         }
-        setBusy(true);
-        setNote("Checking your password…");
-        requestDownload().then(function (r) {
-          setBusy(false);
-          if (r.status === "ok") {
-            dlTicket = "";       // ticket + token are both spent now
-            refreshTurnstile();
-            setNote("Password accepted — your download is starting…", "ok");
-            triggerDownload(r.url);
-            window.setTimeout(close, 1600);
-          } else if (r.status === "wrong_pass") {
-            setNote("Wrong password. Go back to step 1 and try again.", "error");
-            showStep(1);
-            if (passInput) { passInput.focus(); passInput.select(); }
-          } else if (r.status === "verify") {
-            // ticket + fallback token both expired — redo step 1
-            dlTicket = "";
-            refreshTurnstile();
-            setNote("Security check expired — please confirm your password again.", "error");
-            showStep(1);
-          } else if (r.status === "slow") {
-            setNote("Download limit reached for now — please try again later.", "error");
-          } else {
-            setNote("Couldn't reach the download service. Please try again in a moment.", "error");
-          }
-        });
+        setNote("Redirecting you to Dropbox…", "ok");
+        window.location.href = selectedUrl;
+        window.setTimeout(close, 600);
       });
     }
   })();
